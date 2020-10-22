@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
@@ -15,26 +15,31 @@
 
 #pragma once
 
-#include <stdint.h>
-#include <signal.h>
 #include <errno.h>
 #include <s2n.h>
-
-#include "tls/s2n_tls_parameters.h"
-#include "tls/s2n_handshake.h"
-#include "tls/s2n_client_hello.h"
-#include "tls/s2n_crypto.h"
-#include "tls/s2n_config.h"
-#include "tls/s2n_prf.h"
-#include "tls/s2n_x509_validator.h"
+#include <signal.h>
+#include <stdint.h>
 
 #include "stuffer/s2n_stuffer.h"
+
+#include "tls/s2n_client_hello.h"
+#include "tls/s2n_config.h"
+#include "tls/s2n_crypto.h"
+#include "tls/s2n_handshake.h"
+#include "tls/s2n_prf.h"
+#include "tls/s2n_tls_parameters.h"
+#include "tls/s2n_x509_validator.h"
+#include "tls/s2n_key_update.h"
+#include "tls/s2n_kem_preferences.h"
+#include "tls/s2n_ecc_preferences.h"
+#include "tls/s2n_security_policies.h"
+
 
 #include "crypto/s2n_hash.h"
 #include "crypto/s2n_hmac.h"
 
-#include "utils/s2n_timer.h"
 #include "utils/s2n_mem.h"
+#include "utils/s2n_timer.h"
 
 #define S2N_TLS_PROTOCOL_VERSION_LEN    2
 
@@ -50,8 +55,8 @@ struct s2n_connection {
     /* The configuration (cert, key .. etc ) */
     struct s2n_config *config;
 
-    /* Overrides Cipher Preferences in config if non-null */
-    const struct s2n_cipher_preferences *cipher_pref_override;
+    /* Overrides Security Policy in config if non-null */
+    const struct s2n_security_policy *security_policy_override;
 
     /* The user defined context associated with connection */
     void *context;
@@ -89,8 +94,26 @@ struct s2n_connection {
     /* Was the EC point formats sent by the client */
     unsigned ec_point_formats:1;
 
-     /* whether the connection address is ipv6 or not */
+    /* whether the connection address is ipv6 or not */
     unsigned ipv6:1;
+
+    /* Whether server_name extension was used to make a decision on cert selection.
+     * RFC6066 Section 3 states that server which used server_name to make a decision
+     * on certificate or security settings has to send an empty server_name.
+     */
+    unsigned server_name_used:1;
+
+    /* If write fd is broken */
+    unsigned write_fd_broken:1;
+
+    /* Track request extensions to ensure correct response extension behavior.
+     *
+     * We need to track client and server extensions separately because some
+     * extensions (like request_status and other Certificate extensions) can
+     * be requested by the client, the server, or both.
+     */
+    s2n_extension_bitfield extension_requests_sent;
+    s2n_extension_bitfield extension_requests_received;
 
     /* Is this connection a client or a server connection */
     s2n_mode mode;
@@ -121,6 +144,9 @@ struct s2n_connection {
     uint8_t client_protocol_version;
     uint8_t server_protocol_version;
     uint8_t actual_protocol_version;
+
+    /* Flag indicating whether a protocol version has been
+     * negotiated yet. */
     uint8_t actual_protocol_version_established;
 
     /* Our crypto parameters */
@@ -130,6 +156,9 @@ struct s2n_connection {
     /* Which set is the client/server actually using? */
     struct s2n_crypto_parameters *client;
     struct s2n_crypto_parameters *server;
+
+    /* Contains parameters needed during the handshake phase */
+    struct s2n_handshake_parameters handshake_params;
 
     /* The PRF needs some storage elements to work with */
     struct s2n_prf_working_space prf_space;
@@ -178,9 +207,6 @@ struct s2n_connection {
     uint8_t writer_alert_out_data[S2N_ALERT_LENGTH];
     struct s2n_stuffer reader_alert_out;
     struct s2n_stuffer writer_alert_out;
-
-    /* Contains parameters needed during the handshake phase */
-    struct s2n_handshake_parameters handshake_params;
 
     /* Our handshake state machine */
     struct s2n_handshake handshake;
@@ -232,7 +258,7 @@ struct s2n_connection {
     sig_atomic_t closed;
 
     /* TLS extension data */
-    char server_name[256];
+    char server_name[S2N_MAX_SERVER_NAME + 1];
 
     /* The application protocol decided upon during the client hello.
      * If ALPN is being used, then:
@@ -248,6 +274,10 @@ struct s2n_connection {
     /* Certificate Transparency response data */
     s2n_ct_support_level ct_level_requested;
     struct s2n_blob ct_response;
+
+    /* QUIC transport parameters data: https://tools.ietf.org/html/draft-ietf-quic-tls-29#section-8.2 */
+    struct s2n_blob our_quic_transport_parameters;
+    struct s2n_blob peer_quic_transport_parameters;
 
     struct s2n_client_hello client_hello;
 
@@ -272,6 +302,24 @@ struct s2n_connection {
 
     /* application protocols overridden */
     struct s2n_blob application_protocols_overridden;
+
+    /* Cookie extension data */
+    struct s2n_stuffer cookie_stuffer;
+
+    /* Key update data */
+    unsigned key_update_pending:1;
+
+    /* Whether this connection can be used by a QUIC implementation.
+     * See s2n_quic_support.h */
+    unsigned quic_enabled:1;
+
+    /* Bitmap to represent preferred list of keyshare for client to generate and send keyshares in the ClientHello message.
+     * The least significant bit (lsb), if set, indicates that the client must send an empty keyshare list.
+     * Each bit value in the bitmap indiciates the corresponding curve in the ecc_preferences list for which a key share needs to be generated.
+     * The order of the curves represented in the bitmap is obtained from the security_policy->ecc_preferences.
+     * Setting and manipulating this value requires security_policy to be configured prior.
+     * */
+    uint8_t preferred_key_shares;
 };
 
 int s2n_connection_is_managed_corked(const struct s2n_connection *s2n_connection);
@@ -284,8 +332,15 @@ int s2n_connection_kill(struct s2n_connection *conn);
 int s2n_connection_send_stuffer(struct s2n_stuffer *stuffer, struct s2n_connection *conn, uint32_t len);
 int s2n_connection_recv_stuffer(struct s2n_stuffer *stuffer, struct s2n_connection *conn, uint32_t len);
 
-extern int s2n_connection_get_cipher_preferences(struct s2n_connection *conn, const struct s2n_cipher_preferences **cipher_preferences);
-extern int s2n_connection_get_protocol_preferences(struct s2n_connection *conn, struct s2n_blob **protocol_preferences);
-extern int s2n_connection_set_client_auth_type(struct s2n_connection *conn, s2n_cert_auth_type cert_auth_type);
-extern int s2n_connection_get_client_auth_type(struct s2n_connection *conn, s2n_cert_auth_type *client_cert_auth_type);
-extern int s2n_connection_get_client_cert_chain(struct s2n_connection *conn, uint8_t **der_cert_chain_out, uint32_t *cert_chain_len);
+int s2n_connection_get_cipher_preferences(struct s2n_connection *conn, const struct s2n_cipher_preferences **cipher_preferences);
+int s2n_connection_get_security_policy(struct s2n_connection *conn, const struct s2n_security_policy **security_policy);
+int s2n_connection_get_kem_preferences(struct s2n_connection *conn, const struct s2n_kem_preferences **kem_preferences);
+int s2n_connection_get_signature_preferences(struct s2n_connection *conn, const struct s2n_signature_preferences **signature_preferences);
+int s2n_connection_get_ecc_preferences(struct s2n_connection *conn, const struct s2n_ecc_preferences **ecc_preferences);
+int s2n_connection_get_protocol_preferences(struct s2n_connection *conn, struct s2n_blob **protocol_preferences);
+int s2n_connection_set_client_auth_type(struct s2n_connection *conn, s2n_cert_auth_type cert_auth_type);
+int s2n_connection_get_client_auth_type(struct s2n_connection *conn, s2n_cert_auth_type *client_cert_auth_type);
+int s2n_connection_get_client_cert_chain(struct s2n_connection *conn, uint8_t **der_cert_chain_out, uint32_t *cert_chain_len);
+uint8_t s2n_connection_get_protocol_version(const struct s2n_connection *conn);
+/* `none` keyword represents a list of empty keyshares */
+int s2n_connection_set_keyshare_by_name_for_testing(struct s2n_connection *conn, const char* curve_name);

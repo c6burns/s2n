@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
@@ -20,4 +20,3 @@
 #include "utils/s2n_safety.h"
 
 DEFINE_POINTER_CLEANUP_FUNC(X509*, X509_free);
-DEFINE_POINTER_CLEANUP_FUNC(X509_STORE_CTX*, X509_STORE_CTX_free);

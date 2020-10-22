@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
@@ -20,8 +20,10 @@
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <stdint.h>
+#include <stdio.h>
 
 #include "s2n_annotations.h"
+#include "s2n_safety.h"
 
 /**
  * Get the process id
@@ -44,7 +46,7 @@ pid_t s2n_actual_getpid()
  * hold equal contents.
  *
  * The execution time of this function is independent of the values
- * stored in the arrays.  
+ * stored in the arrays.
  *
  * Timing may depend on the length of the arrays, and on the location
  * of the arrays in memory (e.g. if a buffer has been paged out, this
@@ -53,16 +55,20 @@ pid_t s2n_actual_getpid()
  * Returns:
  *  Whether all bytes in arrays "a" and "b" are identical
  */
-int s2n_constant_time_equals(const uint8_t * a, const uint8_t * b, uint32_t len)
+bool s2n_constant_time_equals(const uint8_t * a, const uint8_t * b, const uint32_t len)
 {
     S2N_PUBLIC_INPUT(a);
     S2N_PUBLIC_INPUT(b);
     S2N_PUBLIC_INPUT(len);
-    
+
+    if (len != 0 && (a == NULL || b == NULL)) {
+        return false;
+    }
+
     uint8_t xor = 0;
     for (int i = 0; i < len; i++) {
         /* Invariants must hold for each execution of the loop
-	 * and at loop exit, hence the <= */ 
+	 * and at loop exit, hence the <= */
         S2N_INVARIENT(i <= len);
         xor |= a[i] ^ b[i];
     }
@@ -85,13 +91,22 @@ int s2n_constant_time_copy_or_dont(uint8_t * dest, const uint8_t * src, uint32_t
     S2N_PUBLIC_INPUT(dest);
     S2N_PUBLIC_INPUT(src);
     S2N_PUBLIC_INPUT(len);
-    
+
+/* This underflows a value of 0 to the maximum value via arithmetic underflow,
+ * so the check for arithmetic overflow/underflow needs to be disabled for CBMC.
+ * Additionally, uint_fast16_t is defined as the fastest available unsigned
+ * integer with 16 bits or greater, and is not guaranteed to be 16 bits long.
+ * To handle this, the conversion overflow check also needs to be enabled. */
+#pragma CPROVER check push
+#pragma CPROVER check disable "conversion"
+#pragma CPROVER check disable "unsigned-overflow"
     uint8_t mask = ((uint_fast16_t)((uint_fast16_t)(dont) - 1)) >> 8;
+#pragma CPROVER check pop
 
     /* dont = 0 : mask = 0xff */
     /* dont > 0 : mask = 0x00 */
 
-    for (int i = 0; i < len; i++) {
+    for (uint32_t i = 0; i < len; i++) {
         uint8_t old = dest[i];
         uint8_t diff = (old ^ src[i]) & mask;
         dest[i] = old ^ diff;
@@ -130,8 +145,21 @@ int s2n_constant_time_pkcs1_unpad_or_dont(uint8_t * dst, const uint8_t * src, ui
 
     dont_copy |= src[0] ^ 0x00;
     dont_copy |= src[1] ^ 0x02;
-    dont_copy |= start_of_data[-1] ^ 0x00;
 
+/* Since -1 is being used, we need to disable the pointer overflow check for CBMC. */
+#pragma CPROVER check push
+#pragma CPROVER check disable "pointer-overflow"
+    dont_copy |= start_of_data[-1] ^ 0x00;
+#pragma CPROVER check pop
+
+/* This underflows a value of 0 to the maximum value via arithmetic underflow,
+ * so the check for arithmetic overflow/underflow needs to be disabled for CBMC.
+ * Additionally, uint_fast16_t is defined as the fastest available unsigned
+ * integer with 16 bits or greater, and is not guaranteed to be 16 bits long.
+ * To handle this, the conversion overflow check also needs to be enabled. */
+#pragma CPROVER check push
+#pragma CPROVER check disable "conversion"
+#pragma CPROVER check disable "unsigned-overflow"
     for (uint32_t i = 2; i < srclen - expectlen - 1; i++) {
         /* Note! We avoid using logical NOT (!) here; while in practice
          * many compilers will use constant-time sequences for this operator,
@@ -143,8 +171,64 @@ int s2n_constant_time_pkcs1_unpad_or_dont(uint8_t * dst, const uint8_t * src, ui
         /* src[i] > 0 : mask = 0x00 */
         dont_copy |= mask;
     }
+#pragma CPROVER check pop
 
     s2n_constant_time_copy_or_dont(dst, start_of_data, expectlen, dont_copy);
 
     return 0;
+}
+
+static bool s_s2n_in_unit_test = false;
+
+bool s2n_in_unit_test()
+{
+    return s_s2n_in_unit_test;
+}
+
+int s2n_in_unit_test_set(bool newval)
+{
+    s_s2n_in_unit_test = newval;
+    return S2N_SUCCESS;
+}
+
+int s2n_align_to(uint32_t initial, uint32_t alignment, uint32_t* out)
+{
+    notnull_check(out);
+    PRECONDITION_POSIX(alignment != 0);
+    if (initial == 0) {
+        *out = 0;
+        return S2N_SUCCESS;
+    }
+    const uint64_t i = initial;
+    const uint64_t a = alignment;
+    const uint64_t result = a * (((i - 1) / a) + 1);
+    S2N_ERROR_IF(result > UINT32_MAX, S2N_ERR_INTEGER_OVERFLOW);
+    *out = (uint32_t) result;
+    return S2N_SUCCESS;
+}
+
+int s2n_mul_overflow(uint32_t a, uint32_t b, uint32_t* out)
+{
+    notnull_check(out);
+    const uint64_t result = ((uint64_t) a) * ((uint64_t) b);
+    S2N_ERROR_IF(result > UINT32_MAX, S2N_ERR_INTEGER_OVERFLOW);
+    *out = (uint32_t) result;
+    return S2N_SUCCESS;
+}
+
+int s2n_add_overflow(uint32_t a, uint32_t b, uint32_t* out)
+{
+    notnull_check(out);
+    uint64_t result = ((uint64_t) a) + ((uint64_t) b);
+    S2N_ERROR_IF(result > UINT32_MAX, S2N_ERR_INTEGER_OVERFLOW);
+    *out = (uint32_t) result;
+    return S2N_SUCCESS;
+}
+
+int s2n_sub_overflow(uint32_t a, uint32_t b, uint32_t* out)
+{
+    notnull_check(out);
+    S2N_ERROR_IF(a < b, S2N_ERR_INTEGER_OVERFLOW);
+    *out = a - b;
+    return S2N_SUCCESS;
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
@@ -14,7 +14,12 @@
  */
 #include "crypto/s2n_fips.h"
 
+#include "error/s2n_errno.h"
+
 #include "tls/s2n_cipher_suites.h"
+#include "tls/extensions/s2n_extension_type.h"
+#include "tls/s2n_security_policies.h"
+#include "tls/extensions/s2n_client_key_share.h"
 
 #include "utils/s2n_mem.h"
 #include "utils/s2n_random.h"
@@ -31,18 +36,18 @@ unsigned long s2n_get_openssl_version(void)
 
 int s2n_init(void)
 {
-    GUARD(s2n_fips_init());
-    GUARD(s2n_mem_init());
-    GUARD(s2n_rand_init());
-    GUARD(s2n_cipher_suites_init());
+    GUARD_POSIX(s2n_fips_init());
+    GUARD_POSIX(s2n_mem_init());
+    GUARD_AS_POSIX(s2n_rand_init());
+    GUARD_POSIX(s2n_cipher_suites_init());
+    GUARD_POSIX(s2n_security_policies_init());
+    GUARD_POSIX(s2n_config_defaults_init());
+    GUARD_POSIX(s2n_extension_type_init());
 
     S2N_ERROR_IF(atexit(s2n_cleanup_atexit) != 0, S2N_ERR_ATEXIT);
 
-    /* these functions do lazy init. Avoid the race conditions and just do it here. */
-    if (s2n_is_in_fips_mode()) {
-        s2n_fetch_default_fips_config();
-    } else {
-        s2n_fetch_default_config();
+    if (getenv("S2N_PRINT_STACKTRACE")) {
+      s2n_stack_traces_enabled_set(true);
     }
 
     return 0;
@@ -50,17 +55,26 @@ int s2n_init(void)
 
 int s2n_cleanup(void)
 {
-    GUARD(s2n_rand_cleanup_thread());
-
+    /* s2n_cleanup is supposed to be called from each thread before exiting,
+     * so ensure that whatever clean ups we have here are thread safe */
+    GUARD_AS_POSIX(s2n_rand_cleanup_thread());
     return 0;
+}
+
+static bool s2n_cleanup_atexit_impl(void)
+{
+    /* all of these should run, regardless of result, but the
+     * values to need to be consumed to prevent warnings */
+    bool a = s2n_result_is_ok(s2n_rand_cleanup_thread());
+    bool b = s2n_result_is_ok(s2n_rand_cleanup());
+    bool c = s2n_mem_cleanup() == 0;
+    s2n_wipe_static_configs();
+
+    return a && b && c;
 }
 
 static void s2n_cleanup_atexit(void)
 {
-    s2n_rand_cleanup_thread();
-    s2n_cipher_suites_cleanup();
-    s2n_rand_cleanup();
-    s2n_mem_cleanup();
-    s2n_wipe_static_configs();
+    s2n_cleanup_atexit_impl();
 }
 

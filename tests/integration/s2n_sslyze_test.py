@@ -1,5 +1,5 @@
 #
-# Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License").
 # You may not use this file except in compliance with the License.
@@ -45,7 +45,7 @@ def run_sslyze_scan(endpoint, port, scan_output_location, enter_fips_mode=False)
     s2nd_cmd = ["../../bin/s2nd"]
     s2nd_cmd.extend([str(endpoint), str(port), "-n", "-s", "--parallelize"])
     
-    s2nd_ciphers = "test_all"
+    s2nd_ciphers = "test_all_tls12"
     if enter_fips_mode == True:
         s2nd_ciphers = "test_all_fips"
         s2nd_cmd.append("--enter-fips-mode")
@@ -120,9 +120,9 @@ def main():
     parser = argparse.ArgumentParser(description='Runs SSLyze scan against s2nd')
     parser.add_argument('host', help='The host for s2nd to bind to')
     parser.add_argument('port', type=int, help='The port for s2nd to bind to')
-    parser.add_argument('--libcrypto', default='openssl-1.1.0', choices=['openssl-1.0.2', 'openssl-1.0.2-fips', 'openssl-1.1.0', 'openssl-1.1.x-master', 'libressl'],
+    parser.add_argument('--libcrypto', default='openssl-1.1.1', choices=S2N_LIBCRYPTO_CHOICES,
             help="""The Libcrypto that s2n was built with. s2n supports different cipher suites depending on
-                    libcrypto version. Defaults to openssl-1.1.0.""")
+                    libcrypto version. Defaults to openssl-1.1.1.""")
     args = parser.parse_args()
 
     # Retrieve the test ciphers to use based on the libcrypto version s2n was built with

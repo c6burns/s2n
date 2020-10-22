@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
@@ -17,7 +17,9 @@
 
 #include "tls/s2n_tls_parameters.h"
 #include "tls/s2n_connection.h"
+#include "tls/s2n_crypto.h"
 
+#include "crypto/s2n_certificate.h"
 #include "crypto/s2n_cipher.h"
 #include "crypto/s2n_hmac.h"
 
@@ -28,21 +30,46 @@
 #define S2N_KEY_EXCHANGE_EPH      0x02  /* Ephemeral key exchange */
 #define S2N_KEY_EXCHANGE_ECC      0x04  /* Elliptic curve cryptography */
 
-typedef enum {
-    S2N_AUTHENTICATION_RSA = 0,
-    S2N_AUTHENTICATION_ECDSA
-} s2n_authentication_method;
+#define S2N_MAX_POSSIBLE_RECORD_ALGS    2
+#if !defined(S2N_NO_PQ)
+#define S2N_PQ_CIPHER_SUITE_COUNT       3
+#else
+#define S2N_PQ_CIPHER_SUITE_COUNT       0
+#endif
 
-#define S2N_MAX_POSSIBLE_RECORD_ALGS  2
+/* Kept up-to-date by s2n_cipher_suite_match_test */
+#define S2N_CIPHER_SUITE_COUNT          (36 + S2N_PQ_CIPHER_SUITE_COUNT)
+
 
 /* Record algorithm flags that can be OR'ed */
 #define S2N_TLS12_AES_GCM_AEAD_NONCE     0x01
 #define S2N_TLS12_CHACHA_POLY_AEAD_NONCE 0x02
+#define S2N_TLS13_RECORD_AEAD_NONCE      0x04
+
+/* From RFC: https://tools.ietf.org/html/rfc8446#section-5.5
+ * For AES-GCM, up to 2^24.5 full-size records (about 24 million) may be
+ * encrypted on a given connection while keeping a safety margin of
+ * approximately 2^-57 for Authenticated Encryption (AE) security.
+ * S2N_TLS13_MAXIMUM_RECORD_NUMBER is 2^24.5 rounded down to the nearest whole number
+ * minus 1 for the key update message.
+ */
+#define S2N_TLS13_AES_GCM_MAXIMUM_RECORD_NUMBER ((uint64_t) 23726565)
+
+typedef enum {
+    S2N_AUTHENTICATION_RSA = 0,
+    S2N_AUTHENTICATION_ECDSA,
+    S2N_AUTHENTICATION_METHOD_SENTINEL
+} s2n_authentication_method;
+
+/* Used by TLS 1.3 CipherSuites (Eg TLS_AES_128_GCM_SHA256 "0x1301") where the Auth method will be specified by the
+ * SignatureScheme Extension, not the CipherSuite. */
+#define S2N_AUTHENTICATION_METHOD_TLS13 S2N_AUTHENTICATION_METHOD_SENTINEL
 
 struct s2n_record_algorithm {
     const struct s2n_cipher *cipher;
     s2n_hmac_algorithm hmac_alg;
     uint32_t flags;
+    uint64_t encryption_limit;
 };
 
 /* Verbose names to avoid confusion with s2n_cipher. Exposed for unit tests */
@@ -89,7 +116,7 @@ struct s2n_cipher_suite {
     /* RFC 5426(TLS1.2) allows cipher suite defined PRFs. Cipher suites defined in and before TLS1.2 will use
      * P_hash with SHA256 when TLS1.2 is negotiated.
      */
-    const s2n_hmac_algorithm tls12_prf_alg;
+    const s2n_hmac_algorithm prf_alg;
 
     const uint8_t minimum_required_tls_version;
 };
@@ -130,6 +157,12 @@ extern struct s2n_cipher_suite s2n_ecdhe_rsa_with_chacha20_poly1305_sha256;
 extern struct s2n_cipher_suite s2n_dhe_rsa_with_chacha20_poly1305_sha256;
 extern struct s2n_cipher_suite s2n_ecdhe_ecdsa_with_chacha20_poly1305_sha256;
 extern struct s2n_cipher_suite s2n_ecdhe_rsa_with_rc4_128_sha;
+extern struct s2n_cipher_suite s2n_ecdhe_kyber_rsa_with_aes_256_gcm_sha384;
+extern struct s2n_cipher_suite s2n_ecdhe_bike_rsa_with_aes_256_gcm_sha384;
+extern struct s2n_cipher_suite s2n_ecdhe_sike_rsa_with_aes_256_gcm_sha384;
+extern struct s2n_cipher_suite s2n_tls13_aes_256_gcm_sha384;
+extern struct s2n_cipher_suite s2n_tls13_aes_128_gcm_sha256;
+extern struct s2n_cipher_suite s2n_tls13_chacha20_poly1305_sha256;
 
 extern int s2n_cipher_suites_init(void);
 extern int s2n_cipher_suites_cleanup(void);

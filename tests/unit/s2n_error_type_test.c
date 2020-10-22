@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
@@ -24,6 +24,7 @@
 int main(void)
 {
 	BEGIN_TEST();
+    EXPECT_SUCCESS(s2n_disable_tls13());
 
 	s2n_errno = S2N_ERR_OK;
 	EXPECT_EQUAL(S2N_ERR_T_OK, s2n_error_get_type(s2n_errno));
@@ -31,7 +32,7 @@ int main(void)
 	EXPECT_EQUAL(S2N_ERR_T_IO, s2n_error_get_type(s2n_errno));
 	s2n_errno = S2N_ERR_CLOSED;
 	EXPECT_EQUAL(S2N_ERR_T_CLOSED, s2n_error_get_type(s2n_errno));
-	s2n_errno = S2N_ERR_BLOCKED;
+	s2n_errno = S2N_ERR_IO_BLOCKED;
 	EXPECT_EQUAL(S2N_ERR_T_BLOCKED, s2n_error_get_type(s2n_errno));
 	s2n_errno = S2N_ERR_ALERT;
 	EXPECT_EQUAL(S2N_ERR_T_ALERT, s2n_error_get_type(s2n_errno));

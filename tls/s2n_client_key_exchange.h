@@ -1,5 +1,5 @@
 /*
- * Copyright 2018 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
@@ -21,7 +21,15 @@
 int s2n_dhe_client_key_send(struct s2n_connection *conn, struct s2n_blob *shared_key);
 int s2n_ecdhe_client_key_send(struct s2n_connection *conn, struct s2n_blob *shared_key);
 int s2n_rsa_client_key_send(struct s2n_connection *conn, struct s2n_blob *shared_key);
+int s2n_kem_client_key_send(struct s2n_connection *conn, struct s2n_blob *shared_key);
+int s2n_hybrid_client_key_send(struct s2n_connection *conn, struct s2n_blob *shared_key);
 
 int s2n_dhe_client_key_recv(struct s2n_connection *conn, struct s2n_blob *shared_key);
 int s2n_ecdhe_client_key_recv(struct s2n_connection *conn, struct s2n_blob *shared_key);
 int s2n_rsa_client_key_recv(struct s2n_connection *conn, struct s2n_blob *shared_key);
+int s2n_kem_client_key_recv(struct s2n_connection *conn, struct s2n_blob *shared_key);
+int s2n_hybrid_client_key_recv(struct s2n_connection *conn, struct s2n_blob *shared_key);
+
+int s2n_dhe_client_key_external(struct s2n_connection * conn, struct s2n_blob* shared_key);
+int s2n_ecdhe_client_key_external(struct s2n_connection * conn, struct s2n_blob* shared_key);
+int s2n_rsa_client_key_external(struct s2n_connection *conn, struct s2n_blob *shared_key);

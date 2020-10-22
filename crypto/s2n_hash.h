@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stdbool.h>
 
 #include <openssl/md5.h>
 #include <openssl/sha.h>
@@ -76,7 +77,7 @@ struct s2n_hash_state {
  * either OpenSSL's low-level algorithm-specific API's or OpenSSL's EVP API's.
  */
 struct s2n_hash {
-    int (*new) (struct s2n_hash_state *state);
+    int (*alloc) (struct s2n_hash_state *state);
     int (*allow_md5_for_fips) (struct s2n_hash_state *state);
     int (*init) (struct s2n_hash_state *state, s2n_hash_algorithm alg);
     int (*update) (struct s2n_hash_state *state, const void *data, uint32_t size);
@@ -88,7 +89,7 @@ struct s2n_hash {
 
 extern int s2n_hash_digest_size(s2n_hash_algorithm alg, uint8_t *out);
 extern int s2n_hash_block_size(s2n_hash_algorithm alg, uint64_t *block_size);
-extern int s2n_hash_is_available(s2n_hash_algorithm alg);
+extern bool s2n_hash_is_available(s2n_hash_algorithm alg);
 extern int s2n_hash_is_ready_for_input(struct s2n_hash_state *state);
 extern int s2n_hash_new(struct s2n_hash_state *state);
 extern int s2n_hash_allow_md5_for_fips(struct s2n_hash_state *state);

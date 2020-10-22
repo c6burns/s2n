@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
@@ -38,12 +38,13 @@
 struct alert_ctx {
     int write_fd;
     int invoked;
+    int count;
 
     uint8_t level;
     uint8_t code;
 };
 
-int mock_client(int writefd, int readfd, s2n_alert_behavior alert_behavior, int expect_failure)
+int mock_client(struct s2n_test_io_pair *io_pair, s2n_alert_behavior alert_behavior, int expect_failure)
 {
     struct s2n_connection *conn;
     struct s2n_config *config;
@@ -60,8 +61,7 @@ int mock_client(int writefd, int readfd, s2n_alert_behavior alert_behavior, int 
     s2n_config_set_alert_behavior(config, alert_behavior);
     s2n_connection_set_config(conn, config);
 
-    s2n_connection_set_read_fd(conn, readfd);
-    s2n_connection_set_write_fd(conn, writefd);
+    s2n_connection_set_io_pair(conn, io_pair);
 
     rc = s2n_negotiate(conn, &blocked);
     if (expect_failure) {
@@ -88,8 +88,7 @@ int mock_client(int writefd, int readfd, s2n_alert_behavior alert_behavior, int 
     s2n_connection_free(conn);
     s2n_config_free(config);
 
-    close(writefd);
-    close(readfd);
+    s2n_io_pair_close_one_end(io_pair, S2N_CLIENT);
 
     s2n_cleanup();
 
@@ -113,16 +112,18 @@ int mock_nanoseconds_since_epoch(void *data, uint64_t *nanoseconds)
     return 0;
 }
 
-int client_hello_send_alert(struct s2n_connection *conn, void *ctx)
+int client_hello_send_alerts(struct s2n_connection *conn, void *ctx)
 {
     struct alert_ctx *alert = ctx;
     uint8_t alert_msg[] = { TLS_ALERT, TLS_ALERT_VERSION, TLS_ALERT_LENGTH, alert->level, alert->code };
 
-    if (write(alert->write_fd, alert_msg, sizeof(alert_msg)) != sizeof(alert_msg)) {
-        _exit(100);
-    }
+    for (int i = 0; i < alert->count; i++) {
+        if (write(alert->write_fd, alert_msg, sizeof(alert_msg)) != sizeof(alert_msg)) {
+            _exit(100);
+        }
 
-    alert->invoked = 1;
+        alert->invoked++;
+    }
 
     return 0;
 }
@@ -135,8 +136,6 @@ int main(int argc, char **argv)
     s2n_blocked_status blocked;
     int status;
     pid_t pid;
-    int server_to_client[2];
-    int client_to_server[2];
     char *cert_chain_pem;
     char *private_key_pem;
     struct s2n_cert_chain_and_key *chain_and_key;
@@ -145,8 +144,6 @@ int main(int argc, char **argv)
     /* Ignore SIGPIPE */
     signal(SIGPIPE, SIG_IGN);
 
-    EXPECT_SUCCESS(setenv("S2N_ENABLE_CLIENT_MODE", "1", 0));
-
     EXPECT_NOT_NULL(cert_chain_pem = malloc(S2N_MAX_TEST_PEM_SIZE));
     EXPECT_NOT_NULL(private_key_pem = malloc(S2N_MAX_TEST_PEM_SIZE));
     EXPECT_SUCCESS(s2n_read_test_pem(S2N_DEFAULT_TEST_CERT_CHAIN, cert_chain_pem, S2N_MAX_TEST_PEM_SIZE));
@@ -154,45 +151,45 @@ int main(int argc, char **argv)
     EXPECT_NOT_NULL(chain_and_key = s2n_cert_chain_and_key_new());
     EXPECT_SUCCESS(s2n_cert_chain_and_key_load_pem(chain_and_key, cert_chain_pem, private_key_pem));
 
-    /* Test that we ignore Warning Alerts in S2N_ALERT_IGNORE_WARNINGS mode */
+    /* Test that we ignore Warning Alerts in S2N_ALERT_IGNORE_WARNINGS mode in TLS1.2 */
     {
         EXPECT_NOT_NULL(config = s2n_config_new());
         EXPECT_SUCCESS(s2n_config_add_cert_chain_and_key_to_store(config, chain_and_key));
+        EXPECT_SUCCESS(s2n_config_set_cipher_preferences(config, "default"));
 
         /* Create a pipe */
-        EXPECT_SUCCESS(pipe(server_to_client));
-        EXPECT_SUCCESS(pipe(client_to_server));
+        struct s2n_test_io_pair io_pair;
+        EXPECT_SUCCESS(s2n_io_pair_init(&io_pair));
 
         /* Set up the callback to send an alert after receiving ClientHello */
-        struct alert_ctx warning_alert = {.write_fd = server_to_client[1], .invoked = 0, .level = TLS_ALERT_LEVEL_WARNING, .code = TLS_ALERT_UNRECOGNIZED_NAME};
-        EXPECT_SUCCESS(s2n_config_set_client_hello_cb(config, client_hello_send_alert, &warning_alert));
+        struct alert_ctx warning_alert = {.write_fd = io_pair.server, .invoked = 0, .count = 2, .level = TLS_ALERT_LEVEL_WARNING, .code = TLS_ALERT_UNRECOGNIZED_NAME};
+        EXPECT_SUCCESS(s2n_config_set_client_hello_cb(config, client_hello_send_alerts, &warning_alert));
 
         /* Create a child process */
         pid = fork();
         if (pid == 0) {
-            /* This is the child process, close the read end of the pipe */
-            EXPECT_SUCCESS(close(client_to_server[0]));
-            EXPECT_SUCCESS(close(server_to_client[1]));
+            /* This is the client process, close the server end of the pipe */
+            EXPECT_SUCCESS(s2n_io_pair_close_one_end(&io_pair, S2N_SERVER));
 
-            mock_client(client_to_server[1], server_to_client[0], S2N_ALERT_IGNORE_WARNINGS, 0);
+            mock_client(&io_pair, S2N_ALERT_IGNORE_WARNINGS, 0);
         }
 
         /* This is the parent */
-        EXPECT_SUCCESS(close(client_to_server[1]));
-        EXPECT_SUCCESS(close(server_to_client[0]));
+        /* This is the server process, close the client end of the pipe */
+        EXPECT_SUCCESS(s2n_io_pair_close_one_end(&io_pair, S2N_CLIENT));
 
         EXPECT_NOT_NULL(conn = s2n_connection_new(S2N_SERVER));
         EXPECT_SUCCESS(s2n_connection_set_config(conn, config));
 
         /* Set up the connection to read from the fd */
-        EXPECT_SUCCESS(s2n_connection_set_read_fd(conn, client_to_server[0]));
-        EXPECT_SUCCESS(s2n_connection_set_write_fd(conn, server_to_client[1]));
+        EXPECT_SUCCESS(s2n_connection_set_io_pair(conn, &io_pair));
 
         /* Negotiate the handshake. */
         EXPECT_SUCCESS(s2n_negotiate(conn, &blocked));
+        EXPECT_EQUAL(conn->actual_protocol_version, S2N_TLS12);
 
         /* Ensure that callback was invoked */
-        EXPECT_EQUAL(warning_alert.invoked, 1);
+        EXPECT_EQUAL(warning_alert.invoked, 2);
 
         for (int i = 1; i < 0xffff; i += 100) {
             char * ptr = buffer;
@@ -213,8 +210,7 @@ int main(int argc, char **argv)
 
         EXPECT_SUCCESS(s2n_shutdown(conn, &blocked));
         EXPECT_SUCCESS(s2n_connection_free(conn));
-        EXPECT_SUCCESS(close(client_to_server[0]));
-        EXPECT_SUCCESS(close(server_to_client[1]));
+        EXPECT_SUCCESS(s2n_io_pair_close_one_end(&io_pair, S2N_SERVER));
 
         /* Clean up */
         EXPECT_EQUAL(waitpid(-1, &status, 0), pid);
@@ -222,49 +218,47 @@ int main(int argc, char **argv)
         EXPECT_SUCCESS(s2n_config_free(config));
     }
 
-    /* Test that we don't ignore Fatal Alerts in S2N_ALERT_IGNORE_WARNINGS mode */
+    /* Test that we don't ignore Fatal Alerts in S2N_ALERT_IGNORE_WARNINGS mode in TLS1.2 */
     {
         EXPECT_NOT_NULL(config = s2n_config_new());
         EXPECT_SUCCESS(s2n_config_add_cert_chain_and_key_to_store(config, chain_and_key));
+        EXPECT_SUCCESS(s2n_config_set_cipher_preferences(config, "default"));
 
         /* Create a pipe */
-        EXPECT_SUCCESS(pipe(server_to_client));
-        EXPECT_SUCCESS(pipe(client_to_server));
+        struct s2n_test_io_pair io_pair;
+        EXPECT_SUCCESS(s2n_io_pair_init(&io_pair));
 
         /* Set up the callback to send an alert after receiving ClientHello */
-        struct alert_ctx fatal_alert = {.write_fd = server_to_client[1], .invoked = 0, .level = TLS_ALERT_LEVEL_FATAL, .code = TLS_ALERT_UNRECOGNIZED_NAME};
-        EXPECT_SUCCESS(s2n_config_set_client_hello_cb(config, client_hello_send_alert, &fatal_alert));
+        struct alert_ctx fatal_alert = {.write_fd = io_pair.server, .invoked = 0, .count = 1, .level = TLS_ALERT_LEVEL_FATAL, .code = TLS_ALERT_UNRECOGNIZED_NAME};
+        EXPECT_SUCCESS(s2n_config_set_client_hello_cb(config, client_hello_send_alerts, &fatal_alert));
 
         /* Create a child process */
         pid = fork();
         if (pid == 0) {
-            /* This is the child process, close the read end of the pipe */
-            EXPECT_SUCCESS(close(client_to_server[0]));
-            EXPECT_SUCCESS(close(server_to_client[1]));
+            /* This is the client process, close the server end of the pipe */
+            EXPECT_SUCCESS(s2n_io_pair_close_one_end(&io_pair, S2N_SERVER));
 
-            mock_client(client_to_server[1], server_to_client[0], S2N_ALERT_IGNORE_WARNINGS, 1);
+            mock_client(&io_pair, S2N_ALERT_IGNORE_WARNINGS, 1);
         }
 
-        /* This is the parent */
-        EXPECT_SUCCESS(close(client_to_server[1]));
-        EXPECT_SUCCESS(close(server_to_client[0]));
+        /* This is the server process, close the client end of the pipe */
+        EXPECT_SUCCESS(s2n_io_pair_close_one_end(&io_pair, S2N_CLIENT));
 
         EXPECT_NOT_NULL(conn = s2n_connection_new(S2N_SERVER));
         EXPECT_SUCCESS(s2n_connection_set_config(conn, config));
 
         /* Set up the connection to read from the fd */
-        EXPECT_SUCCESS(s2n_connection_set_read_fd(conn, client_to_server[0]));
-        EXPECT_SUCCESS(s2n_connection_set_write_fd(conn, server_to_client[1]));
+        EXPECT_SUCCESS(s2n_connection_set_io_pair(conn, &io_pair));
 
         /* Negotiate the handshake. */
         EXPECT_FAILURE(s2n_negotiate(conn, &blocked));
+        EXPECT_EQUAL(conn->actual_protocol_version, S2N_TLS12);
 
         /* Ensure that callback was invoked */
         EXPECT_EQUAL(fatal_alert.invoked, 1);
 
         EXPECT_SUCCESS(s2n_connection_free(conn));
-        EXPECT_SUCCESS(close(client_to_server[0]));
-        EXPECT_SUCCESS(close(server_to_client[1]));
+        EXPECT_SUCCESS(s2n_io_pair_close_one_end(&io_pair, S2N_SERVER));
 
         /* Clean up */
         EXPECT_EQUAL(waitpid(-1, &status, 0), pid);
@@ -272,49 +266,47 @@ int main(int argc, char **argv)
         EXPECT_SUCCESS(s2n_config_free(config));
     }
 
-    /* Test that we don't ignore Warning Alerts in S2N_ALERT_FAIL_ON_WARNINGS mode */
+    /* Test that we don't ignore Warning Alerts in S2N_ALERT_FAIL_ON_WARNINGS mode in TLS1.2 */
     {
         EXPECT_NOT_NULL(config = s2n_config_new());
         EXPECT_SUCCESS(s2n_config_add_cert_chain_and_key_to_store(config, chain_and_key));
+        EXPECT_SUCCESS(s2n_config_set_cipher_preferences(config, "default"));
 
         /* Create a pipe */
-        EXPECT_SUCCESS(pipe(server_to_client));
-        EXPECT_SUCCESS(pipe(client_to_server));
+        struct s2n_test_io_pair io_pair;
+        EXPECT_SUCCESS(s2n_io_pair_init(&io_pair));
 
         /* Set up the callback to send an alert after receiving ClientHello */
-        struct alert_ctx warning_alert = {.write_fd = server_to_client[1], .invoked = 0, .level = TLS_ALERT_LEVEL_WARNING, .code = TLS_ALERT_UNRECOGNIZED_NAME};
-        EXPECT_SUCCESS(s2n_config_set_client_hello_cb(config, client_hello_send_alert, &warning_alert));
+        struct alert_ctx warning_alert = {.write_fd = io_pair.server, .invoked = 0, .count = 1, .level = TLS_ALERT_LEVEL_WARNING, .code = TLS_ALERT_UNRECOGNIZED_NAME};
+        EXPECT_SUCCESS(s2n_config_set_client_hello_cb(config, client_hello_send_alerts, &warning_alert));
 
         /* Create a child process */
         pid = fork();
         if (pid == 0) {
-            /* This is the child process, close the read end of the pipe */
-            EXPECT_SUCCESS(close(client_to_server[0]));
-            EXPECT_SUCCESS(close(server_to_client[1]));
+            /* This is the client process, close the server end of the pipe */
+            EXPECT_SUCCESS(s2n_io_pair_close_one_end(&io_pair, S2N_SERVER));
 
-            mock_client(client_to_server[1], server_to_client[0], S2N_ALERT_FAIL_ON_WARNINGS, 1);
+            mock_client(&io_pair, S2N_ALERT_FAIL_ON_WARNINGS, 1);
         }
 
-        /* This is the parent */
-        EXPECT_SUCCESS(close(client_to_server[1]));
-        EXPECT_SUCCESS(close(server_to_client[0]));
+        /* This is the server process, close the client end of the pipe */
+        EXPECT_SUCCESS(s2n_io_pair_close_one_end(&io_pair, S2N_CLIENT));
 
         EXPECT_NOT_NULL(conn = s2n_connection_new(S2N_SERVER));
         EXPECT_SUCCESS(s2n_connection_set_config(conn, config));
 
         /* Set up the connection to read from the fd */
-        EXPECT_SUCCESS(s2n_connection_set_read_fd(conn, client_to_server[0]));
-        EXPECT_SUCCESS(s2n_connection_set_write_fd(conn, server_to_client[1]));
+        EXPECT_SUCCESS(s2n_connection_set_io_pair(conn, &io_pair));
 
         /* Negotiate the handshake. */
         EXPECT_FAILURE(s2n_negotiate(conn, &blocked));
+        EXPECT_EQUAL(conn->actual_protocol_version, S2N_TLS12);
 
         /* Ensure that callback was invoked */
         EXPECT_EQUAL(warning_alert.invoked, 1);
 
         EXPECT_SUCCESS(s2n_connection_free(conn));
-        EXPECT_SUCCESS(close(client_to_server[0]));
-        EXPECT_SUCCESS(close(server_to_client[1]));
+        EXPECT_SUCCESS(s2n_io_pair_close_one_end(&io_pair, S2N_SERVER));
 
         /* Clean up */
         EXPECT_EQUAL(waitpid(-1, &status, 0), pid);

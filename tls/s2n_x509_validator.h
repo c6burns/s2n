@@ -1,5 +1,5 @@
 /*
- * Copyright 2017 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
@@ -18,6 +18,14 @@
 #include "api/s2n.h"
 
 #include <openssl/x509v3.h>
+
+/* one day, BoringSSL/AWS-LC, may add ocsp stapling support. Let's future proof this a bit by grabbing a definition
+ * that would have to be there when they add support */
+#if (defined(OPENSSL_IS_BORINGSSL) || defined(OPENSSL_IS_AWSLC)) && !defined(OCSP_RESPONSE_STATUS_SUCCESSFUL)
+#define S2N_OCSP_STAPLING_SUPPORTED 0
+#else
+#define S2N_OCSP_STAPLING_SUPPORTED 1
+#endif /* (defined(OPENSSL_IS_BORINGSSL) || defined(OPENSSL_IS_AWSLC)) && !defined(OCSP_RESPONSE_STATUS_SUCCESSFUL) */
 
 typedef enum {
     S2N_CERT_OK = 0,
@@ -46,11 +54,12 @@ struct s2n_x509_trust_store {
  */
 struct s2n_x509_validator {
     struct s2n_x509_trust_store *trust_store;
-    STACK_OF(X509) *cert_chain;
-
+    X509_STORE_CTX *store_ctx;
     uint8_t skip_cert_validation;
     uint8_t check_stapled_ocsp;
     uint16_t max_chain_depth;
+    STACK_OF(X509) *cert_chain_from_wire;
+    int state;
 };
 
 /** Some libcrypto implementations do not support OCSP validation. Returns 1 if supported, 0 otherwise. */
@@ -97,14 +106,18 @@ void s2n_x509_validator_wipe(struct s2n_x509_validator *validator);
  * and return it but not validate the certificates. Alternative Names and Subject Name will be passed to the host verification callback.
  * The verification callback will be possibly called multiple times depending on how many names are found.
  * If any of those calls return TRUE, that stage of the validation will continue, otherwise once all names are tried and none matched as
- * trusted, the chain will be considered UNTRUSTED
+ * trusted, the chain will be considered UNTRUSTED.
+ *
+ * This function can only be called once per instance of an s2n_x509_validator. If must be called prior to calling
+ * s2n_x509_validator_validate_cert_stapled_ocsp_response().
  */
 s2n_cert_validation_code s2n_x509_validator_validate_cert_chain(struct s2n_x509_validator *validator, struct s2n_connection *conn,
-                                                                uint8_t *cert_chain_in, uint32_t cert_chain_len, s2n_cert_type *cert_type,
+                                                                uint8_t *cert_chain_in, uint32_t cert_chain_len, s2n_pkey_type *pkey_type,
                                                                 struct s2n_pkey *public_key_out);
 
 /**
- * Validates an ocsp response against the most recent certificate chain. Also verifies the timestamps on the response.
+ * Validates an ocsp response against the most recent certificate chain. Also verifies the timestamps on the response. This function can only be
+ * called once per instance of an s2n_x509_validator and only after a successful call to s2n_x509_validator_validate_cert_chain().
  */
 s2n_cert_validation_code s2n_x509_validator_validate_cert_stapled_ocsp_response(struct s2n_x509_validator *validator,  struct s2n_connection *conn,
                                                                                 const uint8_t *ocsp_response, uint32_t size);

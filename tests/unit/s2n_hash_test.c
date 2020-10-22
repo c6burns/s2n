@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
@@ -37,6 +37,7 @@ int main(int argc, char **argv)
     uint64_t bytes_in_hash;
 
     BEGIN_TEST();
+    EXPECT_SUCCESS(s2n_disable_tls13());
 
     GUARD(s2n_hash_new(&hash));
     EXPECT_FALSE(s2n_hash_is_ready_for_input(&hash));
@@ -51,18 +52,18 @@ int main(int argc, char **argv)
         GUARD(s2n_hash_digest_size(S2N_HASH_MD5, &md5_digest_size));
         EXPECT_EQUAL(md5_digest_size, 16);
         EXPECT_SUCCESS(s2n_hash_init(&hash, S2N_HASH_MD5));
-	EXPECT_TRUE(s2n_hash_is_ready_for_input(&hash));
-	EXPECT_SUCCESS(s2n_hash_get_currently_in_hash_total(&hash, &bytes_in_hash));
-	EXPECT_EQUAL(bytes_in_hash, 0);
+        EXPECT_TRUE(s2n_hash_is_ready_for_input(&hash));
+        EXPECT_SUCCESS(s2n_hash_get_currently_in_hash_total(&hash, &bytes_in_hash));
+        EXPECT_EQUAL(bytes_in_hash, 0);
 
         EXPECT_SUCCESS(s2n_hash_update(&hash, hello, strlen((char *)hello)));
-	EXPECT_TRUE(s2n_hash_is_ready_for_input(&hash));
-	EXPECT_SUCCESS(s2n_hash_get_currently_in_hash_total(&hash, &bytes_in_hash));
-	EXPECT_EQUAL(bytes_in_hash, 13);
+        EXPECT_TRUE(s2n_hash_is_ready_for_input(&hash));
+        EXPECT_SUCCESS(s2n_hash_get_currently_in_hash_total(&hash, &bytes_in_hash));
+        EXPECT_EQUAL(bytes_in_hash, 13);
 
         EXPECT_SUCCESS(s2n_hash_digest(&hash, digest_pad, MD5_DIGEST_LENGTH));
-	EXPECT_FALSE(s2n_hash_is_ready_for_input(&hash));
-	EXPECT_FAILURE(s2n_hash_get_currently_in_hash_total(&hash, &bytes_in_hash));
+        EXPECT_FALSE(s2n_hash_is_ready_for_input(&hash));
+        EXPECT_FAILURE(s2n_hash_get_currently_in_hash_total(&hash, &bytes_in_hash));
 
         EXPECT_SUCCESS(s2n_stuffer_init(&output, &out));
         for (int i = 0; i < 16; i++) {
@@ -73,9 +74,9 @@ int main(int argc, char **argv)
         EXPECT_EQUAL(memcmp(output_pad, "59ca0efa9f5633cb0371bbc0355478d8", 16 * 2), 0);
 
         GUARD(s2n_hash_reset(&hash));
-	EXPECT_TRUE(s2n_hash_is_ready_for_input(&hash));
-	EXPECT_SUCCESS(s2n_hash_get_currently_in_hash_total(&hash, &bytes_in_hash));
-	EXPECT_EQUAL(bytes_in_hash, 0);
+        EXPECT_TRUE(s2n_hash_is_ready_for_input(&hash));
+        EXPECT_SUCCESS(s2n_hash_get_currently_in_hash_total(&hash, &bytes_in_hash));
+        EXPECT_EQUAL(bytes_in_hash, 0);
     }
 
     /* Try SHA1 */

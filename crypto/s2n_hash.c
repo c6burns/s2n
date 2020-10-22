@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 Amazon.com, Inc. or its affiliates. All Rights Reserved.
+ * Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License").
  * You may not use this file except in compliance with the License.
@@ -76,29 +76,25 @@ int s2n_hash_block_size(s2n_hash_algorithm alg, uint64_t *block_size)
     return 0;
 }
 
-/* Return 1 if hash algorithm is available, 0 otherwise. */
-int s2n_hash_is_available(s2n_hash_algorithm alg)
+/* Return true if hash algorithm is available, false otherwise. */
+bool s2n_hash_is_available(s2n_hash_algorithm alg)
 {
-    int is_available = 0;
     switch (alg) {
     case S2N_HASH_MD5:
     case S2N_HASH_MD5_SHA1:
-        /* Set is_available to 0 if in FIPS mode, as MD5 algs are not available in FIPS mode. */
-        is_available = !s2n_is_in_fips_mode();
-        break;
+        /* return false if in FIPS mode, as MD5 algs are not available in FIPS mode. */
+        return !s2n_is_in_fips_mode();
     case S2N_HASH_NONE:
     case S2N_HASH_SHA1:
     case S2N_HASH_SHA224:
     case S2N_HASH_SHA256:
     case S2N_HASH_SHA384:
     case S2N_HASH_SHA512:
-        is_available = 1;
-        break;
-    default:
-        S2N_ERROR(S2N_ERR_HASH_INVALID_ALGORITHM);
+        return true;
+    case S2N_HASH_SENTINEL:
+        return false;
     }
-
-    return is_available;
+    return false;
 }
 
 int s2n_hash_is_ready_for_input(struct s2n_hash_state *state)
@@ -203,7 +199,7 @@ static int s2n_low_level_hash_digest(struct s2n_hash_state *state, void *out, ui
         break;
     case S2N_HASH_MD5:
         eq_check(size, MD5_DIGEST_LENGTH);
-	GUARD_OSSL(MD5_Final(out, &state->digest.low_level.md5), S2N_ERR_HASH_DIGEST_FAILED);
+        GUARD_OSSL(MD5_Final(out, &state->digest.low_level.md5), S2N_ERR_HASH_DIGEST_FAILED);
         break;
     case S2N_HASH_SHA1:
         eq_check(size, SHA_DIGEST_LENGTH);
@@ -398,6 +394,7 @@ static int s2n_evp_hash_copy(struct s2n_hash_state *to, struct s2n_hash_state *f
         if (s2n_digest_is_md5_allowed_for_fips(&from->digest.high_level.evp)) {
             GUARD(s2n_hash_allow_md5_for_fips(to));
         }
+        FALL_THROUGH;
     case S2N_HASH_SHA1:
     case S2N_HASH_SHA224:
     case S2N_HASH_SHA256:
@@ -409,8 +406,8 @@ static int s2n_evp_hash_copy(struct s2n_hash_state *to, struct s2n_hash_state *f
         if (s2n_digest_is_md5_allowed_for_fips(&from->digest.high_level.evp)) {
             GUARD(s2n_hash_allow_md5_for_fips(to));
         }
-	GUARD_OSSL(EVP_MD_CTX_copy_ex(to->digest.high_level.evp.ctx, from->digest.high_level.evp.ctx), S2N_ERR_HASH_COPY_FAILED);
-	GUARD_OSSL(EVP_MD_CTX_copy_ex(to->digest.high_level.evp_md5_secondary.ctx, from->digest.high_level.evp_md5_secondary.ctx), S2N_ERR_HASH_COPY_FAILED);
+        GUARD_OSSL(EVP_MD_CTX_copy_ex(to->digest.high_level.evp.ctx, from->digest.high_level.evp.ctx), S2N_ERR_HASH_COPY_FAILED);
+        GUARD_OSSL(EVP_MD_CTX_copy_ex(to->digest.high_level.evp_md5_secondary.ctx, from->digest.high_level.evp_md5_secondary.ctx), S2N_ERR_HASH_COPY_FAILED);
         break;
     default:
         S2N_ERROR(S2N_ERR_HASH_INVALID_ALGORITHM);
@@ -455,7 +452,7 @@ static int s2n_evp_hash_free(struct s2n_hash_state *state)
 }
 
 static const struct s2n_hash s2n_low_level_hash = {
-    .new = &s2n_low_level_hash_new,
+    .alloc = &s2n_low_level_hash_new,
     .allow_md5_for_fips = NULL,
     .init = &s2n_low_level_hash_init,
     .update = &s2n_low_level_hash_update,
@@ -466,7 +463,7 @@ static const struct s2n_hash s2n_low_level_hash = {
 };
 
 static const struct s2n_hash s2n_evp_hash = {
-    .new = &s2n_evp_hash_new,
+    .alloc = &s2n_evp_hash_new,
     .allow_md5_for_fips = &s2n_evp_hash_allow_md5_for_fips,
     .init = &s2n_evp_hash_init,
     .update = &s2n_evp_hash_update,
@@ -490,9 +487,9 @@ int s2n_hash_new(struct s2n_hash_state *state)
      */
     GUARD(s2n_hash_set_impl(state));
 
-    notnull_check(state->hash_impl->new);
+    notnull_check(state->hash_impl->alloc);
 
-    return state->hash_impl->new(state);
+    return state->hash_impl->alloc(state);
 }
 
 int s2n_hash_allow_md5_for_fips(struct s2n_hash_state *state)
